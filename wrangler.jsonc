@@ -1,5 +1,5 @@
 {
-  "name": "imgena",
+  "name": "cloudflare-worker-api",
   "main": "src/worker.js",
   "workers_dev": true,
   "preview_urls": false,
