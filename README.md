@@ -1,4 +1,4 @@
-# imgena
+# cloudflare-worker-api
 
 A Cloudflare Worker that proxies Cloudflare Workers AI models over a simple HTTP/WebSocket API.
 
