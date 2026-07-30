@@ -16,12 +16,14 @@ export default {
             return json({ models: ALL_MODELS });
         }
 
-        // ─── GET /models/:model/content-type ─────────────────────────────────
+        // ─── GET /models/content-type?model=... ───────────────────────────────
         //   Returns the output contentType, taskType, and supported connectionTypes
         //   for the requested model.
-        const contentTypeMatch = url.pathname.match(/^\/models\/(.+)\/content-type$/);
-        if (request.method === "GET" && contentTypeMatch) {
-            const model = decodeURIComponent(contentTypeMatch[1]);
+        if (request.method === "GET" && url.pathname === "/models/content-type") {
+            const model = url.searchParams.get("model");
+            if (!model) {
+                return json({ error: "model query parameter is required" }, 400);
+            }
             if (!MODELS.includes(model)) {
                 return json({ error: `Model not found: ${model}` }, 404);
             }
@@ -35,27 +37,28 @@ export default {
                 taskType:        modelMeta.taskType,
                 connectionTypes: modelMeta.connectionTypes,
                 connectionInfo: {
-                    batch:    modelMeta.connectionTypes.includes(CONN.BATCH)    ? "POST /run-model/:model" : null,
-                    stream:   modelMeta.connectionTypes.includes(CONN.STREAM)   ? "POST /run-model/:model  (include stream:true in payload)" : null,
-                    realtime: modelMeta.connectionTypes.includes(CONN.REALTIME) ? "GET  /realtime/:model  (WebSocket upgrade)" : null,
+                    batch:    modelMeta.connectionTypes.includes(CONN.BATCH)    ? "POST /run-model  (model in body)" : null,
+                    stream:   modelMeta.connectionTypes.includes(CONN.STREAM)   ? "POST /run-model  (model in body, stream:true in body)" : null,
+                    realtime: modelMeta.connectionTypes.includes(CONN.REALTIME) ? "GET  /realtime?model=...  (WebSocket upgrade)" : null,
                 },
             });
         }
 
-        // ─── GET /realtime/:model  (WebSocket upgrade) ────────────────────────
+        // ─── GET /realtime?model=...  (WebSocket upgrade) ─────────────────────
         //   Proxies a real-time WebSocket connection to the Cloudflare AI
         //   real-time API.  Requires env.CF_ACCOUNT_ID and env.CF_API_TOKEN.
-        const realtimeMatch = url.pathname.match(/^\/realtime\/(.+)$/);
-        if (request.method === "GET" && realtimeMatch) {
-            const model = decodeURIComponent(realtimeMatch[1]);
-
+        if (request.method === "GET" && url.pathname === "/realtime") {
+            const model = url.searchParams.get("model");
+            if (!model) {
+                return json({ error: "model query parameter is required" }, 400);
+            }
             if (!MODELS.includes(model)) {
                 return json({ error: `Model not found: ${model}` }, 404);
             }
             if (!REALTIME_MODELS.has(model)) {
                 return json({
                     error: `Model '${model}' does not support real-time connections.`,
-                    hint:  "Check connectionTypes via GET /models/:model/content-type",
+                    hint:  "Check connectionTypes via GET /models/content-type?model=...",
                 }, 400);
             }
 
@@ -73,19 +76,17 @@ export default {
             return handleRealtimeProxy(request, model, env);
         }
 
-        // ─── POST /run-model/:model ───────────────────────────────────────────
-        const runModelMatch = url.pathname.match(/^\/run-model\/(.+)$/);
-        if (request.method !== "POST" || !runModelMatch) {
+        // ─── POST /run-model ──────────────────────────────────────────────────
+        if (request.method !== "POST" || url.pathname !== "/run-model") {
             return json({ error: "Not allowed" }, 405);
         }
 
-        const model = decodeURIComponent(runModelMatch[1]);
-
         try {
-            const { modelPayload, stream = false } = await request.json();
+            const { model, modelPayload, stream = false } = await request.json();
 
-            log({ modelPayload, model, stream });
+            log({ model, modelPayload, stream });
 
+            if (!model)        return json({ error: "model parameter is required" }, 400);
             if (!modelPayload) return json({ error: "modelPayload parameter is required" }, 400);
             if (!MODELS.includes(model)) {
                 return json({ error: `Model does not exist. Available models: ${MODELS.toString()}` }, 400);

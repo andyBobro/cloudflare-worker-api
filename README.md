@@ -32,11 +32,20 @@ Returns the full list of available models with their names and descriptions.
 
 ---
 
-### `GET /models/:model/content-type`
+### `GET /models/content-type?model=...`
 
 Returns metadata for a specific model: its output content type, task category, and the connection modes it supports.
 
-`:model` must be URL-encoded (e.g. `@cf/meta/llama-3.2-3b-instruct` → `%40cf%2Fmeta%2Fllama-3.2-3b-instruct`).
+**Query parameters**
+
+| Param | Required | Description |
+|---|---|---|
+| `model` | ✅ | Full model name, e.g. `@cf/meta/llama-3.2-3b-instruct` |
+
+**Example**
+```
+GET /models/content-type?model=@cf/black-forest-labs/flux-1-schnell
+```
 
 **Response**
 ```json
@@ -46,7 +55,7 @@ Returns metadata for a specific model: its output content type, task category, a
   "taskType": "Text-to-Image",
   "connectionTypes": ["batch"],
   "connectionInfo": {
-    "batch": "POST /run-model/:model",
+    "batch": "POST /run-model  (model in body)",
     "stream": null,
     "realtime": null
   }
@@ -63,7 +72,7 @@ Returns metadata for a specific model: its output content type, task category, a
 
 ---
 
-### `POST /run-model/:model`
+### `POST /run-model`
 
 Runs a model and returns its output. Supports batch inference and SSE streaming.
 
@@ -71,16 +80,18 @@ Runs a model and returns its output. Supports batch inference and SSE streaming.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `modelPayload` | object | ✅ | The input passed directly to the model (prompt, messages, audio, etc.) |
+| `model` | string | ✅ | Full model name, e.g. `@cf/meta/llama-3.2-3b-instruct` |
+| `modelPayload` | object | ✅ | Input passed directly to the model (prompt, messages, audio, etc.) |
 | `stream` | boolean | ❌ | Set `true` to receive a streaming SSE response. Only valid for models with the `stream` connection type. Default: `false` |
 
 #### Batch — text generation
 
 ```http
-POST /run-model/%40cf%2Fmeta%2Fllama-3.2-3b-instruct
+POST /run-model
 Content-Type: application/json
 
 {
+  "model": "@cf/meta/llama-3.2-3b-instruct",
   "modelPayload": {
     "messages": [{ "role": "user", "content": "What is the capital of France?" }]
   }
@@ -92,10 +103,11 @@ Content-Type: application/json
 Returns raw `image/png` bytes.
 
 ```http
-POST /run-model/%40cf%2Fblack-forest-labs%2Fflux-1-schnell
+POST /run-model
 Content-Type: application/json
 
 {
+  "model": "@cf/black-forest-labs/flux-1-schnell",
   "modelPayload": { "prompt": "A sunset over the ocean" }
 }
 ```
@@ -105,10 +117,11 @@ Content-Type: application/json
 The `image` field in `modelPayload` can be a **base64-encoded string** — the worker decodes it to binary automatically before forwarding to the model.
 
 ```http
-POST /run-model/%40cf%2Fmeta%2Fllama-3.2-11b-vision-instruct
+POST /run-model
 Content-Type: application/json
 
 {
+  "model": "@cf/meta/llama-3.2-11b-vision-instruct",
   "modelPayload": {
     "image": "<base64-encoded image>",
     "prompt": "Describe this image"
@@ -119,10 +132,11 @@ Content-Type: application/json
 #### Batch — speech recognition
 
 ```http
-POST /run-model/%40cf%2Fopenai%2Fwhisper
+POST /run-model
 Content-Type: application/json
 
 {
+  "model": "@cf/openai/whisper",
   "modelPayload": {
     "audio": "<base64-encoded audio>"
   }
@@ -134,10 +148,11 @@ Content-Type: application/json
 Add `"stream": true` to any text-generation request. The response is a `text/event-stream` where each event contains a JSON delta.
 
 ```http
-POST /run-model/%40cf%2Fmeta%2Fllama-3.2-3b-instruct
+POST /run-model
 Content-Type: application/json
 
 {
+  "model": "@cf/meta/llama-3.2-3b-instruct",
   "modelPayload": {
     "messages": [{ "role": "user", "content": "Tell me a joke" }]
   },
@@ -155,9 +170,15 @@ data: [DONE]
 
 ---
 
-### `GET /realtime/:model` — WebSocket
+### `GET /realtime?model=...` — WebSocket
 
 Opens a bidirectional WebSocket connection to the Cloudflare AI real-time endpoint for the requested model. The worker acts as a transparent proxy, forwarding all messages in both directions.
+
+**Query parameters**
+
+| Param | Required | Description |
+|---|---|---|
+| `model` | ✅ | Full model name, e.g. `@cf/deepgram/nova-3` |
 
 **Supported models** (those with the `realtime` connection type):
 
@@ -175,7 +196,7 @@ Opens a bidirectional WebSocket connection to the Cloudflare AI real-time endpoi
 **Example (JavaScript)**
 ```js
 const ws = new WebSocket(
-  "wss://<worker-domain>/realtime/%40cf%2Fdeepgram%2Fnova-3",
+  "wss://<worker-domain>/realtime?model=@cf/deepgram/nova-3",
   { headers: { Authorization: "Bearer <API_KEY>" } }
 );
 
