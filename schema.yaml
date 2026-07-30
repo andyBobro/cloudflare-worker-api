@@ -1,0 +1,842 @@
+openapi: 3.1.0
+
+info:
+  title: cloudflare-worker-api Workers AI API
+  version: "1.0.0"
+  description: |
+    Cloudflare Worker that proxies Workers AI models over HTTP and WebSocket.
+    Supports batch inference, SSE streaming, and real-time voice connections.
+
+servers:
+  - url: https://{worker}.{accountName}.workers.dev
+    variables:
+      worker:
+        default: cloudflare-worker-api
+      accountName:
+        default: your-account-name
+
+security:
+  - bearerAuth: []
+
+# ─── Paths ────────────────────────────────────────────────────────────────────
+
+paths:
+
+  /models:
+    get:
+      operationId: listModels
+      summary: List all available models
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  models:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Model"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /models/content-type:
+    get:
+      operationId: getModelContentType
+      summary: Get output content type and connection metadata for a model
+      parameters:
+        - name: model
+          in: query
+          required: true
+          schema:
+            type: string
+          example: "@cf/meta/llama-3.2-3b-instruct"
+          description: Full model name
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelMeta"
+              examples:
+                textGeneration:
+                  summary: Text generation model
+                  value:
+                    model: "@cf/meta/llama-3.2-3b-instruct"
+                    contentType: "application/json"
+                    taskType: "Text Generation"
+                    connectionTypes: [batch, stream]
+                    connectionInfo:
+                      batch: "POST /run-model  (model in body)"
+                      stream: "POST /run-model  (model in body, stream:true in body)"
+                      realtime: null
+                textToImage:
+                  summary: Text-to-image model
+                  value:
+                    model: "@cf/black-forest-labs/flux-1-schnell"
+                    contentType: "image/png"
+                    taskType: "Text-to-Image"
+                    connectionTypes: [batch]
+                    connectionInfo:
+                      batch: "POST /run-model  (model in body)"
+                      stream: null
+                      realtime: null
+                realtimeSpeech:
+                  summary: Real-time speech recognition model
+                  value:
+                    model: "@cf/deepgram/nova-3"
+                    contentType: "application/json"
+                    taskType: "Automatic Speech Recognition"
+                    connectionTypes: [batch, realtime]
+                    connectionInfo:
+                      batch: "POST /run-model  (model in body)"
+                      stream: null
+                      realtime: "GET  /realtime?model=...  (WebSocket upgrade)"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /run-model:
+    post:
+      operationId: runModel
+      summary: Run a model — batch or streaming
+      description: |
+        Runs inference on the specified model.
+
+        **Batch** (default): returns a single response. The `Content-Type` matches the
+        model's task — `application/json` for most, `image/png` for image generation,
+        `audio/mpeg` for text-to-speech.
+
+        **Stream** (`stream: true`): returns `text/event-stream`. Each SSE event contains
+        a JSON object with a `response` field. The stream ends with `data: [DONE]`.
+        Only supported by models whose `connectionTypes` includes `stream`.
+
+        The shape of `modelPayload` depends on the model's task type — see the request
+        body examples and the `modelPayload` schema definitions below.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunModelRequest"
+            examples:
+              textGenChat:
+                summary: Text generation — chat messages
+                value:
+                  model: "@cf/meta/llama-3.2-3b-instruct"
+                  modelPayload:
+                    messages:
+                      - role: system
+                        content: You are a helpful assistant.
+                      - role: user
+                        content: What is the capital of France?
+              textGenPrompt:
+                summary: Text generation — raw prompt
+                value:
+                  model: "@cf/meta/llama-3.2-3b-instruct"
+                  modelPayload:
+                    prompt: "Once upon a time"
+                    max_tokens: 200
+                    temperature: 0.8
+              textGenStream:
+                summary: Text generation — SSE streaming
+                value:
+                  model: "@cf/meta/llama-3.2-3b-instruct"
+                  modelPayload:
+                    messages:
+                      - role: user
+                        content: Tell me a joke
+                  stream: true
+              textToImage:
+                summary: Text-to-image
+                value:
+                  model: "@cf/black-forest-labs/flux-1-schnell"
+                  modelPayload:
+                    prompt: A sunset over the ocean
+                    num_steps: 8
+                    width: 1024
+                    height: 1024
+              img2img:
+                summary: Image-to-image (Stable Diffusion img2img)
+                value:
+                  model: "@cf/runwayml/stable-diffusion-v1-5-img2img"
+                  modelPayload:
+                    prompt: A dog in a forest
+                    image: "<base64-encoded-source-image>"
+                    strength: 0.75
+              inpainting:
+                summary: Inpainting (Stable Diffusion inpainting)
+                value:
+                  model: "@cf/runwayml/stable-diffusion-v1-5-inpainting"
+                  modelPayload:
+                    prompt: A brick wall
+                    image: "<base64-encoded-source-image>"
+                    mask: "<base64-encoded-mask>"
+              vision:
+                summary: Vision / image-to-text
+                value:
+                  model: "@cf/meta/llama-3.2-11b-vision-instruct"
+                  modelPayload:
+                    image: "<base64-encoded-image>"
+                    prompt: Describe what you see in this image.
+              speechRecognition:
+                summary: Automatic speech recognition (Whisper)
+                value:
+                  model: "@cf/openai/whisper"
+                  modelPayload:
+                    audio: "<base64-encoded-audio>"
+              tts:
+                summary: Text-to-speech
+                value:
+                  model: "@cf/deepgram/aura-1"
+                  modelPayload:
+                    text: Hello, this is a test of the text-to-speech system.
+              embeddings:
+                summary: Text embeddings
+                value:
+                  model: "@cf/baai/bge-base-en-v1.5"
+                  modelPayload:
+                    text:
+                      - The quick brown fox
+                      - Jumped over the lazy dog
+              translation:
+                summary: Translation
+                value:
+                  model: "@cf/meta/m2m100-1.2b"
+                  modelPayload:
+                    text: Hello, how are you?
+                    source_lang: en
+                    target_lang: fr
+              summarization:
+                summary: Summarization
+                value:
+                  model: "@cf/facebook/bart-large-cnn"
+                  modelPayload:
+                    input_text: "Workers AI allows you to run AI models in a serverless way..."
+                    max_length: 100
+              sentiment:
+                summary: Text classification (sentiment)
+                value:
+                  model: "@cf/huggingface/distilbert-sst-2-int8"
+                  modelPayload:
+                    text: This product is absolutely fantastic!
+              reranker:
+                summary: Reranker
+                value:
+                  model: "@cf/baai/bge-reranker-base"
+                  modelPayload:
+                    query: What is the capital of France?
+                    contexts:
+                      - text: Paris is the capital of France.
+                      - text: Berlin is the capital of Germany.
+              objectDetection:
+                summary: Object detection
+                value:
+                  model: "@cf/facebook/detr-resnet-50"
+                  modelPayload:
+                    image: "<base64-encoded-image>"
+              imageClassification:
+                summary: Image classification
+                value:
+                  model: "@cf/microsoft/resnet-50"
+                  modelPayload:
+                    image: "<base64-encoded-image>"
+      responses:
+        "200":
+          description: |
+            Inference result. `Content-Type` varies by model task:
+
+            | Task | Content-Type |
+            |---|---|
+            | Text Generation, ASR, Embeddings, Translation, Summarization, Classification, Detection | `application/json` |
+            | Text-to-Image | `image/png` |
+            | Text-to-Speech | `audio/mpeg` |
+            | Streaming (`stream: true`) | `text/event-stream` |
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/TextGenerationResponse"
+                  - $ref: "#/components/schemas/EmbeddingsResponse"
+                  - $ref: "#/components/schemas/ASRResponse"
+                  - $ref: "#/components/schemas/ClassificationResponse"
+                  - $ref: "#/components/schemas/TranslationResponse"
+                  - $ref: "#/components/schemas/SummarizationResponse"
+                  - $ref: "#/components/schemas/ObjectDetectionResponse"
+            image/png:
+              schema:
+                type: string
+                format: binary
+                description: Raw PNG image bytes
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+                description: Raw MP3 audio bytes
+            text/event-stream:
+              schema:
+                $ref: "#/components/schemas/SSEChunk"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /realtime:
+    get:
+      operationId: realtimeWebSocket
+      summary: Open a real-time WebSocket connection to a voice model
+      description: |
+        Upgrades the HTTP connection to a WebSocket and bidirectionally proxies all
+        messages to the Cloudflare AI real-time endpoint for the given model.
+
+        The worker passes messages through verbatim — consult the upstream model's
+        protocol documentation (e.g. Deepgram's streaming API) for the expected
+        message format.
+
+        **Supported models** (connection type `realtime`):
+        | Model | Task |
+        |---|---|
+        | `@cf/deepgram/nova-3` | Speech-to-text |
+        | `@cf/deepgram/flux` | Conversational speech recognition |
+        | `@cf/deepgram/aura-1` | Text-to-speech |
+        | `@cf/deepgram/aura-2-en` | Text-to-speech (English) |
+        | `@cf/deepgram/aura-2-es` | Text-to-speech (Spanish) |
+        | `@cf/pipecat-ai/smart-turn-v2` | Voice activity detection |
+
+        Requires `CF_ACCOUNT_ID` and `CF_API_TOKEN` secrets on the worker.
+      parameters:
+        - name: model
+          in: query
+          required: true
+          schema:
+            type: string
+          example: "@cf/deepgram/nova-3"
+          description: Full model name
+        - name: Upgrade
+          in: header
+          required: true
+          schema:
+            type: string
+            enum: [websocket]
+        - name: Connection
+          in: header
+          required: true
+          schema:
+            type: string
+            enum: [Upgrade]
+      responses:
+        "101":
+          description: Switching Protocols — WebSocket connection established and proxied
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "426":
+          description: Upgrade Required — must send a WebSocket upgrade request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: Bad Gateway — upstream real-time endpoint failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+# ─── Components ───────────────────────────────────────────────────────────────
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Set via the API_KEY Wrangler secret
+
+  # ── Reusable responses ──────────────────────────────────────────────────────
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid API key
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: Unauthorized
+    BadRequest:
+      description: Invalid or missing request parameters
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Model not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  # ── Schemas ─────────────────────────────────────────────────────────────────
+
+  schemas:
+
+    # ── Shared / utility ──────────────────────────────────────────────────────
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+        details:
+          type: string
+        hint:
+          type: string
+
+    Model:
+      type: object
+      required: [name, description]
+      properties:
+        name:
+          type: string
+          example: "@cf/meta/llama-3.2-3b-instruct"
+        description:
+          type: string
+
+    ConnectionType:
+      type: string
+      enum: [batch, stream, realtime]
+      description: |
+        - `batch`    — Standard HTTP POST to /run-model
+        - `stream`   — SSE streaming via POST /run-model with `stream: true`
+        - `realtime` — WebSocket via GET /realtime?model=...
+
+    ModelMeta:
+      type: object
+      required: [model, contentType, taskType, connectionTypes, connectionInfo]
+      properties:
+        model:
+          type: string
+        contentType:
+          type: string
+          description: MIME type of the model's output (batch mode)
+          examples:
+            - application/json
+            - image/png
+            - audio/mpeg
+        taskType:
+          type: string
+          enum:
+            - Text Generation
+            - Text-to-Image
+            - Image-to-Text
+            - Automatic Speech Recognition
+            - Text-to-Speech
+            - Text Embeddings
+            - Text Classification
+            - Translation
+            - Summarization
+            - Object Detection
+            - Image Classification
+            - Voice Activity Detection
+        connectionTypes:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConnectionType"
+        connectionInfo:
+          type: object
+          properties:
+            batch:
+              type: ["string", "null"]
+            stream:
+              type: ["string", "null"]
+            realtime:
+              type: ["string", "null"]
+
+    # ── Image field (reused across tasks) ─────────────────────────────────────
+
+    ImageInput:
+      description: |
+        Image data — either a base64-encoded string (decoded automatically by the worker)
+        or a raw byte array.
+      oneOf:
+        - type: string
+          description: Base64-encoded image
+        - type: array
+          items:
+            type: integer
+          description: Raw image bytes as an array of numbers
+
+    # ── modelPayload schemas by task ───────────────────────────────────────────
+
+    TextGenerationPayload:
+      type: object
+      description: Payload for Text Generation models
+      properties:
+        prompt:
+          type: string
+          description: Single-turn text prompt (use instead of `messages` for non-chat models)
+        messages:
+          type: array
+          description: Multi-turn chat history
+          items:
+            type: object
+            required: [role, content]
+            properties:
+              role:
+                type: string
+                enum: [system, user, assistant]
+              content:
+                type: string
+        max_tokens:
+          type: integer
+          default: 256
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 5
+          default: 1.0
+        top_p:
+          type: number
+          minimum: 0
+          maximum: 2
+        top_k:
+          type: integer
+        seed:
+          type: integer
+        repetition_penalty:
+          type: number
+        frequency_penalty:
+          type: number
+        presence_penalty:
+          type: number
+      oneOf:
+        - required: [prompt]
+        - required: [messages]
+
+    VisionPayload:
+      type: object
+      description: Payload for vision / image-to-text models
+      required: [image]
+      properties:
+        image:
+          $ref: "#/components/schemas/ImageInput"
+        prompt:
+          type: string
+          description: Question or instruction about the image
+        messages:
+          type: array
+          description: Multi-turn chat history (use instead of `prompt` for chat-style models)
+          items:
+            type: object
+            required: [role, content]
+            properties:
+              role:
+                type: string
+                enum: [system, user, assistant]
+              content:
+                type: string
+        max_tokens:
+          type: integer
+          default: 512
+
+    TextToImagePayload:
+      type: object
+      description: Payload for Text-to-Image models
+      required: [prompt]
+      properties:
+        prompt:
+          type: string
+        negative_prompt:
+          type: string
+        num_steps:
+          type: integer
+          minimum: 1
+          maximum: 20
+          default: 20
+        guidance:
+          type: number
+          default: 7.5
+          description: Classifier-free guidance scale
+        width:
+          type: integer
+          default: 1024
+        height:
+          type: integer
+          default: 1024
+        seed:
+          type: integer
+        image:
+          $ref: "#/components/schemas/ImageInput"
+          description: Source image for img2img models
+        mask:
+          $ref: "#/components/schemas/ImageInput"
+          description: Mask image for inpainting models
+        strength:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Denoising strength for img2img (0 = no change, 1 = full diffusion)
+
+    ASRPayload:
+      type: object
+      description: Payload for Automatic Speech Recognition models
+      required: [audio]
+      properties:
+        audio:
+          oneOf:
+            - type: string
+              description: Base64-encoded audio file
+            - type: array
+              items:
+                type: integer
+              description: Raw audio bytes
+        task:
+          type: string
+          enum: [transcribe, translate]
+          default: transcribe
+        language:
+          type: string
+          description: BCP-47 language code (e.g. "en"). Auto-detected if omitted.
+        vad_filter:
+          type: boolean
+          description: Apply voice activity detection to filter silence
+
+    TTSPayload:
+      type: object
+      description: Payload for Text-to-Speech models
+      required: [text]
+      properties:
+        text:
+          type: string
+
+    EmbeddingsPayload:
+      type: object
+      description: Payload for Text Embeddings models
+      required: [text]
+      properties:
+        text:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+          description: Single string or batch of strings to embed
+
+    TranslationPayload:
+      type: object
+      description: Payload for Translation models
+      required: [text, target_lang]
+      properties:
+        text:
+          type: string
+        source_lang:
+          type: string
+          description: BCP-47 source language code. Auto-detected if omitted.
+        target_lang:
+          type: string
+          description: BCP-47 target language code
+
+    SummarizationPayload:
+      type: object
+      description: Payload for Summarization models
+      required: [input_text]
+      properties:
+        input_text:
+          type: string
+        max_length:
+          type: integer
+
+    ClassificationPayload:
+      type: object
+      description: Payload for text classification / sentiment models
+      required: [text]
+      properties:
+        text:
+          type: string
+
+    RerankerPayload:
+      type: object
+      description: Payload for reranker models (e.g. bge-reranker-base)
+      required: [query, contexts]
+      properties:
+        query:
+          type: string
+        contexts:
+          type: array
+          items:
+            type: object
+            required: [text]
+            properties:
+              text:
+                type: string
+
+    ImageClassificationPayload:
+      type: object
+      description: Payload for Image Classification models
+      required: [image]
+      properties:
+        image:
+          $ref: "#/components/schemas/ImageInput"
+
+    ObjectDetectionPayload:
+      type: object
+      description: Payload for Object Detection models
+      required: [image]
+      properties:
+        image:
+          $ref: "#/components/schemas/ImageInput"
+        threshold:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Minimum confidence score to include a detection
+
+    # ── Top-level request body ─────────────────────────────────────────────────
+
+    RunModelRequest:
+      type: object
+      required: [model, modelPayload]
+      properties:
+        model:
+          type: string
+          description: Full model name (e.g. "@cf/meta/llama-3.2-3b-instruct")
+          example: "@cf/meta/llama-3.2-3b-instruct"
+        modelPayload:
+          description: |
+            Input for the model. The required shape depends on the model's task type.
+            Use GET /models/content-type?model=... to look up a model's taskType, then
+            refer to the matching payload schema:
+
+            | taskType | Schema |
+            |---|---|
+            | Text Generation | TextGenerationPayload |
+            | Text-to-Image | TextToImagePayload |
+            | Image-to-Text | VisionPayload |
+            | Automatic Speech Recognition | ASRPayload |
+            | Text-to-Speech | TTSPayload |
+            | Text Embeddings | EmbeddingsPayload |
+            | Text Classification | ClassificationPayload or RerankerPayload |
+            | Translation | TranslationPayload |
+            | Summarization | SummarizationPayload |
+            | Object Detection | ObjectDetectionPayload |
+            | Image Classification | ImageClassificationPayload |
+          oneOf:
+            - $ref: "#/components/schemas/TextGenerationPayload"
+            - $ref: "#/components/schemas/VisionPayload"
+            - $ref: "#/components/schemas/TextToImagePayload"
+            - $ref: "#/components/schemas/ASRPayload"
+            - $ref: "#/components/schemas/TTSPayload"
+            - $ref: "#/components/schemas/EmbeddingsPayload"
+            - $ref: "#/components/schemas/TranslationPayload"
+            - $ref: "#/components/schemas/SummarizationPayload"
+            - $ref: "#/components/schemas/ClassificationPayload"
+            - $ref: "#/components/schemas/RerankerPayload"
+            - $ref: "#/components/schemas/ImageClassificationPayload"
+            - $ref: "#/components/schemas/ObjectDetectionPayload"
+        stream:
+          type: boolean
+          default: false
+          description: |
+            When true, the response is a text/event-stream (SSE). Each event is a JSON
+            object `{ "response": "<token>" }`. The stream ends with `data: [DONE]`.
+            Only valid for models whose connectionTypes includes "stream".
+
+    # ── Response schemas ───────────────────────────────────────────────────────
+
+    TextGenerationResponse:
+      type: object
+      properties:
+        response:
+          type: string
+          description: The generated text
+
+    EmbeddingsResponse:
+      type: object
+      properties:
+        shape:
+          type: array
+          items:
+            type: integer
+          description: "[batchSize, dimensions]"
+        data:
+          type: array
+          items:
+            type: array
+            items:
+              type: number
+          description: One embedding vector per input string
+
+    ASRResponse:
+      type: object
+      properties:
+        text:
+          type: string
+          description: Full transcription
+        words:
+          type: array
+          items:
+            type: object
+            properties:
+              word:
+                type: string
+              start:
+                type: number
+              end:
+                type: number
+
+    ClassificationResponse:
+      type: array
+      items:
+        type: object
+        properties:
+          label:
+            type: string
+          score:
+            type: number
+
+    TranslationResponse:
+      type: object
+      properties:
+        translated_text:
+          type: string
+
+    SummarizationResponse:
+      type: object
+      properties:
+        summary:
+          type: string
+
+    ObjectDetectionResponse:
+      type: array
+      items:
+        type: object
+        properties:
+          label:
+            type: string
+          score:
+            type: number
+          box:
+            type: object
+            properties:
+              xmin: { type: number }
+              ymin: { type: number }
+              xmax: { type: number }
+              ymax: { type: number }
+
+    SSEChunk:
+      type: object
+      description: |
+        One Server-Sent Event delta during a streaming response.
+        The stream ends when the raw event data is the literal string "[DONE]".
+      properties:
+        response:
+          type: string
+          description: The next token or text chunk
